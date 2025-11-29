@@ -1,0 +1,41 @@
+version: 2
+name: spreadsheet-mcp
+displayName: Spreadsheet MCP Servers
+registry:
+  spreadsheet:
+    description: "Spreadsheet operations for Excel, CSV, and ODS files"
+    title: "Spreadsheet Manager"
+    type: server
+    dateAdded: "2025-01-01T00:00:00Z"
+    image: spreadsheet-mcp-server:latest
+    ref: ""
+    tools:
+      - name: create_spreadsheet
+      - name: read_spreadsheet
+      - name: write_spreadsheet
+      - name: append_row
+      - name: list_files
+      - name: format_cells          # existing
+      - name: set_formula
+      - name: get_formula
+      - name: rename_file
+      - name: rename_sheet
+      - name: set_cell_format
+      - name: set_column_format
+      - name: set_row_format
+      - name: create_chart
+      - name: delete_spreadsheet
+      - name: update_cell
+      - name: append_row
+      - name: set_formula
+      - name: get_formula
+      - name: freeze_panes
+      - name: unfreeze_panes
+      
+    metadata:
+      category: productivity
+      tags:
+        - spreadsheet
+        - excel
+        - csv
+        - data

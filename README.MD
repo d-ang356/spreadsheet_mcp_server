@@ -53,30 +53,59 @@ docker build -t spreadsheet-mcp-server:latest .
 
 5. **Configure Claude Desktop**:
 
-Add to your MCP settings:
+Add to your MCP settings: (Claude/claude_desktop_config.json --> should be on Windows under AppData/Roaming under your Windows username dir)
 ```json
 {
   "mcpServers": {
+   "mcp-toolkit-gateway": {
+      "command": "docker",
+      "args": [
+        "run",
+		"-i",
+        "--rm",
+		"--init",
+        "-v",
+        "/var/run/docker.sock:/var/run/docker.sock",
+        "-v",
+        "/Users/[YOUR USERNAME]/.docker/mcp:/mcp",
+        "docker/mcp-gateway",
+        "--catalog=/mcp/catalogs/docker-mcp.yaml",
+        "--catalog=/mcp/catalogs/spreadsheet-mcp.yaml",
+        "--config=/mcp/config.yaml",
+        "--registry=/mcp/registry.yaml",
+        "--tools-config=/mcp/tools.yaml",
+        "--transport=stdio"
+      ]
+    },
     "spreadsheet": {
       "command": "docker",
       "args": [
         "run",
-        "-i",
+		"-i",
         "--rm",
-        "--init",
-        "--stop-signal=SIGTERM",
+		"--init",
         "-v",
-        "/path/to/your/spreadsheets:/app/spreadsheets",
-        "-v",
-        "/path/to/imports:/imports",
+       "C:\\Users\\[YOUR USERNAME]\\spreadsheets:/app/spreadsheets",
+    "-v",
+    "C:\\Users\\[YOUR USERNAME]\\Downloads:/imports",
         "spreadsheet-mcp-server:latest"
       ]
     }
   }
 }
 ```
+Replace `[YOUR USERNAME]` everywhere it is mentioned in the code above with your Windows Username or replace the entire line with the actual Linux paths.
 
-Replace `/path/to/your/spreadsheets` with your desired working directory.
+6. **Add these to your Docker Desktop config directories regarding MCP**:
+
+First edit .docker/mcp/registry.yaml (the path should be on Windows under your username directory)
+Add there under the existing code in similar formatting:
+```  
+spreadsheet:
+    ref: ""
+```
+
+Then copy and paste the file ```spreadsheet-mcp.yaml``` to .docker/mcp/catalogs (again in the same place on Windows)
 
 ## Usage Examples
 
@@ -288,7 +317,7 @@ spreadsheet-mcp-server/
 ├── spreadsheet_server.py    # Main server code
 ├── requirements.txt          # Python dependencies
 ├── Dockerfile               # Docker configuration
-├── catalog.yaml            # MCP catalog
+├── spreadsheet-mcp.yaml     # MCP catalog
 ├── README.md               # This file
 └── spreadsheets/           # Working directory (created automatically)
 ```
