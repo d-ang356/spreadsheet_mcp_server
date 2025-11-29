@@ -95,6 +95,7 @@ Add to your MCP settings: (Claude/claude_desktop_config.json --> should be on Wi
 }
 ```
 Replace `[YOUR USERNAME]` everywhere it is mentioned in the code above with your Windows Username or replace the entire line with the actual Linux paths.
+Make sure that C:\\Users\\[YOUR USERNAME]\\spreadsheets exists! 
 
 6. **Add these to your Docker Desktop config directories regarding MCP**:
 
