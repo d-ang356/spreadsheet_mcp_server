@@ -13,9 +13,8 @@ registry:
       - name: create_spreadsheet
       - name: read_spreadsheet
       - name: write_spreadsheet
-      - name: append_row
       - name: list_files
-      - name: format_cells          # existing
+      - name: format_cells
       - name: set_formula
       - name: get_formula
       - name: rename_file
@@ -27,10 +26,10 @@ registry:
       - name: delete_spreadsheet
       - name: update_cell
       - name: append_row
-      - name: set_formula
-      - name: get_formula
       - name: freeze_panes
       - name: unfreeze_panes
+      - name: set_text_wrap
+      - name: set_cell_alignment
       
     metadata:
       category: productivity

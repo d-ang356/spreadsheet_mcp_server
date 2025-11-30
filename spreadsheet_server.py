@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict
 import csv
+import datetime
+from decimal import Decimal
 
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -24,6 +26,20 @@ from openpyxl.chart import BarChart, PieChart, Reference
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger("spreadsheet-mcp-server")
+
+def serialize_cell_value(value):
+    """Convert cell values to JSON-serializable types"""
+    if value is None:
+        return None
+    elif isinstance(value, (datetime.datetime, datetime.date)):
+        return value.isoformat()  # Convert to ISO format string
+    elif isinstance(value, datetime.time):
+        return value.isoformat()
+    elif isinstance(value, Decimal):
+        return float(value)
+    else:
+        return value
+
 
 
 class SpreadsheetServer:
@@ -40,6 +56,30 @@ class SpreadsheetServer:
         if check_exists and not path.exists():
             raise FileNotFoundError(f"File not found: {filename}")
         return path
+
+    def _sanitize_sheet_name(self, name: str) -> str:
+        """
+        Sanitize sheet name by removing invalid characters.
+        Excel doesn't allow: \ / ? * [ ] :
+        Also limit to 31 characters (Excel's max)
+        """
+        # Remove invalid characters
+        invalid_chars = ['\\', '/', '?', '*', '[', ']', ':']
+        for char in invalid_chars:
+            name = name.replace(char, '')
+
+        # Limit to 31 characters
+        name = name[:31]
+
+        # Remove leading/trailing spaces
+        name = name.strip()
+
+        # If name is empty after sanitization, use default
+        if not name:
+            name = "Sheet1"
+
+        return name
+
 
     # ---------------------- file / sheet utilities ----------------------
     async def list_files(self, pattern: str = "*") -> dict:
@@ -66,20 +106,31 @@ class SpreadsheetServer:
         if format == "xlsx":
             wb = openpyxl.Workbook()
             ws = wb.active
-            ws.title = sheet_name
+
+            # Sanitize the sheet name
+            sanitized_name = self._sanitize_sheet_name(sheet_name)
+            ws.title = sanitized_name
+
             if headers:
                 ws.append(headers)
                 for cell in ws[1]:
                     cell.font = Font(bold=True)
             wb.save(path)
+
+            return {
+                "success": True,
+                "filename": filename,
+                "path": str(path),
+                "sheet_name": sanitized_name,
+                "original_sheet_name": sheet_name if sanitized_name != sheet_name else None
+            }
         elif format == "csv":
             with open(path, 'w', newline='', encoding='utf-8') as f:
                 if headers:
                     csv.writer(f).writerow(headers)
+            return {"success": True, "filename": filename, "path": str(path)}
         else:
             raise ValueError(f"Unsupported format: {format}. Use 'xlsx' or 'csv'")
-
-        return {"success": True, "filename": filename, "path": str(path)}
 
     async def rename_file(self, old_filename: str, new_filename: str) -> dict:
         old = self._resolve_path(old_filename, check_exists=True)
@@ -94,10 +145,20 @@ class SpreadsheetServer:
         wb = openpyxl.load_workbook(path)
         if old_sheet not in wb.sheetnames:
             return {"success": False, "error": f"Sheet {old_sheet} not found"}
+
+        # Sanitize the new sheet name
+        sanitized_name = self._sanitize_sheet_name(new_sheet)
+
         ws = wb[old_sheet]
-        ws.title = new_sheet
+        ws.title = sanitized_name
         wb.save(path)
-        return {"success": True, "file": path.name, "sheet": new_sheet}
+
+        return {
+            "success": True,
+            "file": path.name,
+            "sheet": sanitized_name,
+            "original_name": new_sheet if sanitized_name != new_sheet else None
+        }
 
     # ---------------------- read / write / formula ----------------------
     async def read_spreadsheet(self, filename: str, sheet: Optional[str] = None,
@@ -112,7 +173,8 @@ class SpreadsheetServer:
             for i, row in enumerate(ws.iter_rows(values_only=False)):
                 if max_rows and i >= max_rows:
                     break
-                data.append([c.value for c in row])
+                # Serialize each cell value to handle datetime, etc.
+                data.append([serialize_cell_value(c.value) for c in row])
             return {
                 "success": True,
                 "data": data,
@@ -248,13 +310,24 @@ class SpreadsheetServer:
             return {"success": False, "error": "Unsupported chart type"}
 
         chart.title = title
-        data = Reference(ws, range_string=data_range)
-        chart.add_data(data, titles_from_data=True)
-        ws.add_chart(chart, "A1")
-        wb.save(path)
-        return {"success": True, "chart_type": chart_type}
 
-    @staticmethod
+        # Format the range with sheet name if not already included
+        if '!' not in data_range:
+            # Add sheet name to range
+            formatted_range = f"'{sheet}'!{data_range}"
+        else:
+            formatted_range = data_range
+
+        data = Reference(ws, range_string=formatted_range)
+        chart.add_data(data, titles_from_data=True)
+
+        # Position the chart - you might want to make this configurable
+        ws.add_chart(chart, "D2")  # Places chart starting at cell D2
+
+        wb.save(path)
+        return {"success": True, "chart_type": chart_type, "title": title}
+
+
     def _normalize_color(self, color: Optional[str]) -> Optional[str]:
         """Convert RGB hex color to ARGB format for openpyxl"""
         if not color:
@@ -276,7 +349,7 @@ class SpreadsheetServer:
                            bold: bool = False, italic: bool = False,
                            bg_color: Optional[str] = None,
                            font_size: Optional[int] = None) -> dict:
-        """Format a range of cells like A1:B10"""
+        """Format a range of cells like A1:B10 or entire columns/rows like A:A or 1:1"""
         path = self._resolve_path(filename, check_exists=True)
         wb = openpyxl.load_workbook(path)
         ws = wb[sheet]
@@ -284,12 +357,43 @@ class SpreadsheetServer:
         # Normalize color to ARGB
         normalized_color = self._normalize_color(bg_color)
 
-        for row in ws[cell_range]:
-            for cell in row:
+        # Handle different range types
+        try:
+            cells_to_format = []
+
+            # Check if it's a column range (e.g., B:B or A:C)
+            if ':' in cell_range and all(part.isalpha() or part == '' for part in cell_range.split(':')):
+                # Column range like B:B or A:C
+                for cell in ws[cell_range]:
+                    if isinstance(cell, tuple):
+                        cells_to_format.extend(cell)
+                    else:
+                        cells_to_format.append(cell)
+            # Check if it's a row range (e.g., 1:1 or 1:5)
+            elif ':' in cell_range and all(part.isdigit() or part == '' for part in cell_range.split(':')):
+                # Row range like 1:1 or 1:5
+                for cell in ws[cell_range]:
+                    if isinstance(cell, tuple):
+                        cells_to_format.extend(cell)
+                    else:
+                        cells_to_format.append(cell)
+            else:
+                # Standard cell range like A1:B10
+                for row in ws[cell_range]:
+                    if isinstance(row, tuple):
+                        cells_to_format.extend(row)
+                    else:
+                        cells_to_format.append(row)
+
+            # Apply formatting to all cells
+            for cell in cells_to_format:
                 if bold or italic or font_size:
                     cell.font = Font(bold=bold, italic=italic, size=font_size)
                 if normalized_color:
                     cell.fill = PatternFill(start_color=normalized_color, fill_type="solid")
+
+        except Exception as e:
+            return {"success": False, "error": f"Invalid range format: {str(e)}"}
 
         wb.save(path)
         return {"success": True, "range": cell_range}
@@ -356,6 +460,78 @@ class SpreadsheetServer:
             "message": "Unfrozen panes"
         }
 
+    async def set_text_wrap(self, filename: str, sheet: str, cell_range: str,
+                            wrap: bool = True) -> dict:
+        """
+        Enable or disable text wrapping for a range of cells.
+        Supports standard ranges (A1:B10), entire columns (B:B), or entire rows (1:1)
+        """
+        path = self._resolve_path(filename, check_exists=True)
+        wb = openpyxl.load_workbook(path)
+        ws = wb[sheet]
+
+        # Get all cells in the range
+        cells_to_format = []
+        for item in ws[cell_range]:
+            if isinstance(item, tuple):
+                cells_to_format.extend(item)
+            else:
+                cells_to_format.append(item)
+
+        # Apply text wrapping to all cells
+        for cell in cells_to_format:
+            cell.alignment = Alignment(wrap_text=wrap)
+
+        wb.save(path)
+        return {
+            "success": True,
+            "range": cell_range,
+            "wrap_enabled": wrap,
+            "cells_affected": len(cells_to_format)
+        }
+
+    async def set_cell_alignment(self, filename: str, sheet: str, cell_range: str,
+                                 horizontal: Optional[str] = None,
+                                 vertical: Optional[str] = None,
+                                 wrap_text: Optional[bool] = None) -> dict:
+        """
+        Set cell alignment properties.
+        horizontal: 'left', 'center', 'right', 'justify'
+        vertical: 'top', 'center', 'bottom', 'justify'
+        wrap_text: True/False
+        """
+        path = self._resolve_path(filename, check_exists=True)
+        wb = openpyxl.load_workbook(path)
+        ws = wb[sheet]
+
+        # Get all cells in the range
+        cells_to_format = []
+        for item in ws[cell_range]:
+            if isinstance(item, tuple):
+                cells_to_format.extend(item)
+            else:
+                cells_to_format.append(item)
+
+        # Prepare alignment parameters
+        align_params = {}
+        if horizontal:
+            align_params['horizontal'] = horizontal
+        if vertical:
+            align_params['vertical'] = vertical
+        if wrap_text is not None:
+            align_params['wrap_text'] = wrap_text
+
+        # Apply alignment to all cells
+        for cell in cells_to_format:
+            cell.alignment = Alignment(**align_params)
+
+        wb.save(path)
+        return {
+            "success": True,
+            "range": cell_range,
+            "alignment": align_params,
+            "cells_affected": len(cells_to_format)
+        }
     # ---------------------- JSON-RPC / MCP glue ----------------------
 
 def send_response(response: dict):
@@ -627,6 +803,43 @@ async def handle_tools_list(request_id):
                             "sheet": {"type": "string", "description": "Sheet name"}
                         },
                         "required": ["filename", "sheet"]
+                    }
+                },
+                {
+                    "name": "set_cell_alignment",
+                    "description": "Set cell alignment (horizontal, vertical, text wrapping)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "filename": {"type": "string", "description": "Name of the file"},
+                            "sheet": {"type": "string", "description": "Sheet name"},
+                            "cell_range": {"type": "string",
+                                           "description": "Cell range (e.g., 'A1:B10'), column (e.g., 'B:B'), or row (e.g., '1:1')"},
+                            "horizontal": {"type": "string",
+                                           "description": "Horizontal alignment: 'left', 'center', 'right', 'justify'",
+                                           "enum": ["left", "center", "right", "justify"]},
+                            "vertical": {"type": "string",
+                                         "description": "Vertical alignment: 'top', 'center', 'bottom', 'justify'",
+                                         "enum": ["top", "center", "bottom", "justify"]},
+                            "wrap_text": {"type": "boolean", "description": "Enable text wrapping"}
+                        },
+                        "required": ["filename", "sheet", "cell_range"]
+                    }
+                },
+                {
+                    "name": "set_text_wrap",
+                    "description": "Enable or disable text wrapping for cells. Text will wrap within the cell width.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "filename": {"type": "string", "description": "Name of the file"},
+                            "sheet": {"type": "string", "description": "Sheet name"},
+                            "cell_range": {"type": "string",
+                                           "description": "Cell range (e.g., 'A1:B10'), column range (e.g., 'B:B'), or row range (e.g., '1:1')"},
+                            "wrap": {"type": "boolean", "description": "Enable (true) or disable (false) text wrapping",
+                                     "default": True}
+                        },
+                        "required": ["filename", "sheet", "cell_range"]
                     }
                 }
             ]
