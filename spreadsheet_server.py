@@ -349,7 +349,7 @@ class SpreadsheetServer:
                            bold: bool = False, italic: bool = False,
                            bg_color: Optional[str] = None,
                            font_size: Optional[int] = None) -> dict:
-        """Format a range of cells like A1:B10 or entire columns/rows like A:A or 1:1"""
+        """Format a range of cells like A1:B10, entire columns like B:B, or entire rows like 1:1"""
         path = self._resolve_path(filename, check_exists=True)
         wb = openpyxl.load_workbook(path)
         ws = wb[sheet]
@@ -357,46 +357,35 @@ class SpreadsheetServer:
         # Normalize color to ARGB
         normalized_color = self._normalize_color(bg_color)
 
-        # Handle different range types
+        # Get all cells in the range
+        cells_to_format = []
+
         try:
-            cells_to_format = []
+            result = ws[cell_range]
 
-            # Check if it's a column range (e.g., B:B or A:C)
-            if ':' in cell_range and all(part.isalpha() or part == '' for part in cell_range.split(':')):
-                # Column range like B:B or A:C
-                for cell in ws[cell_range]:
-                    if isinstance(cell, tuple):
-                        cells_to_format.extend(cell)
-                    else:
-                        cells_to_format.append(cell)
-            # Check if it's a row range (e.g., 1:1 or 1:5)
-            elif ':' in cell_range and all(part.isdigit() or part == '' for part in cell_range.split(':')):
-                # Row range like 1:1 or 1:5
-                for cell in ws[cell_range]:
-                    if isinstance(cell, tuple):
-                        cells_to_format.extend(cell)
-                    else:
-                        cells_to_format.append(cell)
+            # Check if it's a single cell
+            if hasattr(result, 'value'):
+                # Single cell
+                cells_to_format.append(result)
             else:
-                # Standard cell range like A1:B10
-                for row in ws[cell_range]:
-                    if isinstance(row, tuple):
-                        cells_to_format.extend(row)
+                # Range of cells
+                for item in result:
+                    if isinstance(item, tuple):
+                        cells_to_format.extend(item)
                     else:
-                        cells_to_format.append(row)
-
-            # Apply formatting to all cells
-            for cell in cells_to_format:
-                if bold or italic or font_size:
-                    cell.font = Font(bold=bold, italic=italic, size=font_size)
-                if normalized_color:
-                    cell.fill = PatternFill(start_color=normalized_color, fill_type="solid")
-
+                        cells_to_format.append(item)
         except Exception as e:
-            return {"success": False, "error": f"Invalid range format: {str(e)}"}
+            return {"success": False, "error": f"Invalid cell range: {str(e)}"}
+
+        # Apply formatting to all cells
+        for cell in cells_to_format:
+            if bold or italic or font_size:
+                cell.font = Font(bold=bold, italic=italic, size=font_size)
+            if normalized_color:
+                cell.fill = PatternFill(start_color=normalized_color, fill_type="solid")
 
         wb.save(path)
-        return {"success": True, "range": cell_range}
+        return {"success": True, "range": cell_range, "cells_formatted": len(cells_to_format)}
 
     async def set_cell_format(self, filename: str, sheet: str, cell: str,
                               bold: bool = False, italic: bool = False,
@@ -464,7 +453,7 @@ class SpreadsheetServer:
                             wrap: bool = True) -> dict:
         """
         Enable or disable text wrapping for a range of cells.
-        Supports standard ranges (A1:B10), entire columns (B:B), or entire rows (1:1)
+        Supports single cells (B3), ranges (A1:B10), columns (B:B), or rows (1:1)
         """
         path = self._resolve_path(filename, check_exists=True)
         wb = openpyxl.load_workbook(path)
@@ -472,11 +461,23 @@ class SpreadsheetServer:
 
         # Get all cells in the range
         cells_to_format = []
-        for item in ws[cell_range]:
-            if isinstance(item, tuple):
-                cells_to_format.extend(item)
+
+        try:
+            result = ws[cell_range]
+
+            # Check if it's a single cell
+            if hasattr(result, 'value'):
+                # Single cell
+                cells_to_format.append(result)
             else:
-                cells_to_format.append(item)
+                # Range of cells
+                for item in result:
+                    if isinstance(item, tuple):
+                        cells_to_format.extend(item)
+                    else:
+                        cells_to_format.append(item)
+        except Exception as e:
+            return {"success": False, "error": f"Invalid cell range: {str(e)}"}
 
         # Apply text wrapping to all cells
         for cell in cells_to_format:
@@ -496,6 +497,7 @@ class SpreadsheetServer:
                                  wrap_text: Optional[bool] = None) -> dict:
         """
         Set cell alignment properties.
+        Supports single cells (B3), ranges (A1:B10), columns (B:B), or rows (1:1)
         horizontal: 'left', 'center', 'right', 'justify'
         vertical: 'top', 'center', 'bottom', 'justify'
         wrap_text: True/False
@@ -506,11 +508,23 @@ class SpreadsheetServer:
 
         # Get all cells in the range
         cells_to_format = []
-        for item in ws[cell_range]:
-            if isinstance(item, tuple):
-                cells_to_format.extend(item)
+
+        try:
+            result = ws[cell_range]
+
+            # Check if it's a single cell
+            if hasattr(result, 'value'):
+                # Single cell
+                cells_to_format.append(result)
             else:
-                cells_to_format.append(item)
+                # Range of cells
+                for item in result:
+                    if isinstance(item, tuple):
+                        cells_to_format.extend(item)
+                    else:
+                        cells_to_format.append(item)
+        except Exception as e:
+            return {"success": False, "error": f"Invalid cell range: {str(e)}"}
 
         # Prepare alignment parameters
         align_params = {}
@@ -654,7 +668,7 @@ async def handle_tools_list(request_id):
                 },
                 {
                     "name": "format_cells",
-                    "description": "Format a range of cells",
+                    "description": "Format cells. Supports single cells (B3), ranges (A1:B10), columns (B:B), or rows (1:1)",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -807,7 +821,7 @@ async def handle_tools_list(request_id):
                 },
                 {
                     "name": "set_cell_alignment",
-                    "description": "Set cell alignment (horizontal, vertical, text wrapping)",
+                    "description": "Set cell alignment. Supports single cells (B3), ranges (A1:B10), columns (B:B), or rows (1:1)",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -828,7 +842,7 @@ async def handle_tools_list(request_id):
                 },
                 {
                     "name": "set_text_wrap",
-                    "description": "Enable or disable text wrapping for cells. Text will wrap within the cell width.",
+                    "description": "Enable or disable text wrapping. Supports single cells (B3), ranges (A1:B10), columns (B:B), or rows (1:1)",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
